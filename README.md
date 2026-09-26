@@ -1,12 +1,14 @@
 # sentinel-soil-uncertainty
 
-Prediction of topsoil soil organic carbon (SOC, g/kg) from Sentinel-2 vegetation indices fused with ISRIC SoilGrids-style covariates. The model outputs a 90 % prediction interval $[Q_{0.05}, Q_{0.95}]$ as well as a median. Everything is evaluated under spatial block cross-validation, and the intervals are calibrated with conformalized quantile regression (CQR).
+Can Sentinel-2 indices plus soil covariates give soil carbon intervals that stay honest in unsampled areas?
 
-The dataset is semi-synthetic. The generating process is known, which makes it possible to check whether the uncertainty estimates behave as intended. None of the numbers below describe a real landscape.
+This repository tests that question on **semi-synthetic data**: prediction of topsoil soil organic carbon (SOC, g/kg) from Sentinel-2 vegetation indices fused with ISRIC SoilGrids-style covariates. The model outputs a 90 % prediction interval $[Q_{0.05}, Q_{0.95}]$ as well as a median. Everything is evaluated under spatial block cross-validation, and the intervals are calibrated with conformalized quantile regression (CQR).
+
+All data here are semi-synthetic. Sample locations, covariates and SOC values are simulated by `src/data_generator.py`, not measured. The generating process is known, which makes it possible to check whether the uncertainty estimates behave as intended. None of the numbers below describe a real landscape.
 
 ## Relation to the MONAI fusion model
 
-This repository tests whether the input design of an early-fusion network, first built for medical imaging with MONAI, carries over to Earth-observation tabular data. In early fusion, the modality-specific feature vectors are concatenated before any learner sees them, and here that is done directly: three spectral indices and four soil/terrain/climate covariates form a single 7-column design matrix. The CNN encoders do not carry over. At ~1.5k samples with 7 features a gradient-boosted tree ensemble is the appropriate learner, and a neural network would add variance without adding signal. `set_global_seed` also seeds `torch` if it is installed, so the two code bases can share one seeding convention.
+This repository tests whether the input design of an early-fusion network, first built for medical imaging with MONAI, carries over to Earth-observation tabular data. In early fusion, the modality-specific feature vectors are concatenated before any learner sees them, and here that is done directly: three spectral indices and four soil/terrain/climate covariates form a single 7-column design matrix. The CNN encoders do not carry over. At ~1.5k samples with 7 features a gradient-boosted tree ensemble is the appropriate learner, and a neural network would add variance without adding signal.
 
 ## Repository layout
 
@@ -29,7 +31,9 @@ python src/model.py                # pooled spatial-CV metrics, ~30 s on one cor
 jupyter lab notebooks/01_multimodal_soc_uncertainty.ipynb
 ```
 
-The notebook regenerates the CSV if it is missing. LightGBM runs single-threaded with `deterministic=True`, which makes the results bit-reproducible on a given platform. Multithreaded histogram construction changes floating-point summation order.
+### Reproducibility
+
+The notebook regenerates the CSV if it is missing. `set_global_seed` fixes the `random`, NumPy and `PYTHONHASHSEED` seeds, and it also seeds `torch` if it is installed, so this code and the MONAI fusion code can share one seeding convention. scikit-learn and LightGBM receive their seeds per estimator. LightGBM runs single-threaded with `deterministic=True`, which makes the results bit-reproducible on a given platform. Multithreaded histogram construction changes floating-point summation order.
 
 ## Data generation
 
@@ -45,7 +49,7 @@ The notebook regenerates the CSV if it is missing. LightGBM runs single-threaded
 
 ## Method
 
-**Quantile models.** One LightGBM regressor per $\tau \in \{0.05, 0.50, 0.95\}$, trained with the pinball loss $L_\tau(y,q) = \max(\tau(y-q), (\tau-1)(y-q))$. The target is $\log(\text{SOC})$. Quantiles are equivariant under monotone transforms, so exponentiating the predicted log-quantiles gives SOC quantiles with no retransformation bias. Quantile crossing is removed by sorting each row (monotone rearrangement).
+**Quantile models.** One LightGBM regressor per $\tau \in \lbrace 0.05, 0.50, 0.95 \rbrace$, trained with the pinball loss $L_\tau(y,q) = \max(\tau(y-q), (\tau-1)(y-q))$. The target is $\log(\text{SOC})$. Quantiles are equivariant under monotone transforms, so exponentiating the predicted log-quantiles gives SOC quantiles with no retransformation bias. Quantile crossing is removed by sorting each row (monotone rearrangement).
 
 **Spatial cross-validation.** 5-fold `GroupKFold` on `spatial_block_id` puts every block entirely in train or entirely in test. Training points within 5 km of any test point are also dropped, which removes 30–143 points per fold. Without the buffer, points just across a block edge share the spatially correlated residual with test points and inflate the scores.
 
@@ -53,7 +57,7 @@ The notebook regenerates the CSV if it is missing. LightGBM runs single-threaded
 
 **Metrics.** $R^2$, MAE and RMSE of $Q_{0.50}$; PICP (empirical coverage of the 90 % interval); MPIW (mean width, g/kg); interval score (width + $2/\alpha$ × miss distance).
 
-## Results (out-of-fold, 1500 samples, 5 folds, 5 km buffer)
+## Results (semi-synthetic data; out-of-fold, 1500 samples, 5 folds, 5 km buffer)
 
 | Variant | $R^2$ | MAE (g/kg) | RMSE (g/kg) | Coverage (PICP) | MPIW (g/kg) | Interval score |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -89,7 +93,11 @@ Samples with undetected haze have higher MAE (6.07 vs 4.85 g/kg) and lower CQR c
 - **Covariate error.** SoilGrids values are model predictions at 250 m, not measurements, and their error enters the model as unmodelled input noise. Point samples also face a support mismatch against 10–20 m Sentinel-2 pixels and 250 m SoilGrids cells.
 - **Sampling bias.** 80 % of samples are clustered. Both the model and its calibration data are dominated by the conditions at those clusters, and coverage drops in the sparse background. Exchangeability-based calibration cannot fix this. Options are covariate-shift-weighted conformal prediction, or an explicit distance-to-data term in the interval.
 - **No area-of-applicability check.** Before mapping wall-to-wall, the prediction domain should be masked where the covariates fall outside the training feature space (e.g. the dissimilarity index of Meyer & Pebesma, 2021).
-- **Synthetic ground truth.** The SOC response is a hand-specified function. Real SOC also depends on land-use history, erosion and management that neither data source observes, so expect lower $R^2$ and wider intervals on field data.
+- **Semi-synthetic ground truth.** No field measurements are used. The SOC response is a hand-specified function. Real SOC also depends on land-use history, erosion and management that neither data source observes, so expect lower $R^2$ and wider intervals on field data.
+
+## Next step: adaptive sampling
+
+The sparse tercile is where coverage fails (0.83 against 0.87–0.89 elsewhere), and the model's interval width does not flag those areas. The next step is to use the model to choose where to sample next. Candidate locations would be ranked by a score that combines CQR interval width with distance to existing samples, or with the area-of-applicability dissimilarity index, because width alone misses sparse areas. A batch of new samples would then be added, the spatial CV rerun, and coverage and MPIW in the sparse tercile compared with random or grid sampling of the same size. The semi-synthetic generator can serve as the ground-truth oracle for this experiment once it can return covariates and SOC at arbitrary candidate coordinates.
 
 ## Using real data
 
