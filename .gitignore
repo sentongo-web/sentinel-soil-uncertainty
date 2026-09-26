@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+# Regenerated deterministically by src/data_generator.py
+data/
